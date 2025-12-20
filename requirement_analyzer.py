@@ -30,9 +30,41 @@ class DeploymentType(str, Enum):
     CLOUD = "cloud_api"        # Sunucu
     HYBRID = "hybrid"          # Hibrit
 
+class CameraSpecs(BaseModel):
+    resolution_width: int = Field(
+        1920, description="Kamera çözünürlüğü genişlik (piksel). Örn: 1920, 1280, 640"
+    )
+    resolution_height: int = Field(
+        1080, description="Kamera çözünürlüğü yükseklik (piksel). Örn: 1080, 720, 480"
+    )
+    max_camera_fps: int = Field(
+        30, description="Kameranın desteklediği maksimum FPS değeri.", ge=1, le=240
+    )
+    lens_type: Optional[str] = Field(
+        None, description="Lens tipi. Örn: 'wide-angle', 'fisheye', 'telephoto', 'standard'"
+    )
+    is_color: bool = Field(
+        True, description="Renkli kamera mı yoksa monokrom mu?"
+    )
+    connection_type: Optional[str] = Field(
+        None, description="Bağlantı türü. Örn: 'USB', 'CSI', 'IP/RTSP', 'MIPI'"
+    )
+    sensor_type: Optional[str] = Field(
+        None, description="Sensör tipi. Örn: 'CMOS', 'CCD'"
+    )
+
 class HardwareConstraints(BaseModel):
     device_name: Optional[str] = Field(
         None, description="Kullanıcının elindeki cihaz. Örn: 'Raspberry Pi 5', 'Jetson Orin Nano'"
+    )
+    ram_gb: Optional[int] = Field(
+        None, description="Mevcut RAM miktarı (GB cinsinden). Örn: 4, 8, 16", ge=1
+    )
+    storage_gb: Optional[int] = Field(
+        None, description="Mevcut depolama alanı (GB cinsinden). Örn: 32, 64, 128, 256", ge=1
+    )
+    has_gpu: Optional[bool] = Field(
+        None, description="Cihazda GPU var mı? (CUDA, TensorRT, vb. için önemli)"
     )
 
 class PerformanceMetrics(BaseModel):
@@ -55,6 +87,10 @@ class VisionProjectRecipe(BaseModel):
     environment: EnvironmentType = Field(..., description="Kameranın çalışacağı ortam koşulları.")
     deployment: DeploymentType = Field(..., description="Projenin çalışacağı platform (Edge/Cloud).")
     performance: PerformanceMetrics = Field(..., description="Hız ve gecikme gereksinimleri.")
+    camera: CameraSpecs = Field(
+        default_factory=CameraSpecs,
+        description="Kamera özellikleri ve teknik spesifikasyonları."
+    )
     hardware: HardwareConstraints = Field(
         default_factory=HardwareConstraints,
         description="Donanım kısıtlamaları ve tercihler."
@@ -77,10 +113,10 @@ class RecipeAgent:
         schema_json = VisionProjectRecipe.model_json_schema()
         
         self.system_prompt = f"""
-Sen bir Görüntü İşleme Proje Danışmanısın. Kullanıcı teknik bilgiye sahip OLMAYABILIR.
+Sen bir Görüntü İşleme Proje Danışmanısın. ⚠️ ÖNEMLİ: Kullanıcı görüntü işleme konusunda TEKNİK BİLGİYE SAHİP DEĞİL!
 
 🎯 GÖREV:
-Kullanıcıyla doğal bir sohbet yaparak aşağıdaki bilgileri topla ve bir JSON reçetesi oluştur:
+Kullanıcının GÜNLÜK DİLLE anlattığı projeden maksimum bilgiyi ÇIKARSANABİLDİĞİNCE ÇOK ÇIKARIM YAP, mümkün olduğunca AZ SORU SOR.
 
 📋 TOPLANMASI GEREKEN BİLGİLER:
 
@@ -98,47 +134,40 @@ Kullanıcıyla doğal bir sohbet yaparak aşağıdaki bilgileri topla ve bir JSO
    - Hız önemli mi? Gerçek zamanlı olmalı mı?
    - Gecikme tolere edilebilir mi?
    → Buradan çıkar: min_fps, max_latency_ms
-   (Sen makul değerler belirle: hızlı→30fps/100ms, normal→15fps/300ms, çok hızlı→60fps/50ms)
 
-4. **Donanım ve Deployment**
-   - Nerede çalışacak? (küçük cihaz, bilgisayar, sunucu, belirtmemiş)
+4. **Kamera Özellikleri**
+   - Hangi kamera kullanılacak? Çözünürlük? (Full HD, HD, düşük çözünürlük)
+   - Kameranın FPS değeri ne? (30fps, 60fps standart değerler)
+   - Özel lens tipi var mı? (wide-angle, fisheye, normal)
+   - Bağlantı tipi? (USB, CSI, IP kamera)
+   → Buradan çıkar: resolution_width, resolution_height, max_camera_fps, lens_type, connection_type
+
+5. **Donanım ve Deployment**
+   - Nerede çalışacak? (küçük cihaz, bilgisayar, sunucu)
    - Hangi cihaz varsa? (Raspberry Pi, Jetson, PC, vs.)
-   → Buradan çıkar: deployment (edge_device/cloud_api/hybrid), device_name
+   - RAM ve depolama ne kadar? (4GB/8GB/16GB RAM, 32GB/64GB depolama)
+   - GPU var mı?
+   → Buradan çıkar: deployment (edge_device/cloud_api/hybrid), device_name, ram_gb, storage_gb, has_gpu
 
-5. **Model Önerisi**
-   - Yukarıdaki bilgilere göre en uygun Computer Vision modelini SEN seç
-   → Bildiğin modeller: YOLOv8/v10 (nano/small/medium), MobileNetV3, EfficientNet, 
-     PatchCore, EfficientAD, PaddleOCR, EasyOCR, Facenet, ResNet, vb.
+6. **Model Önerisi**
+   - Yukarıdaki bilgilere göre en uygun Computer Vision modelini SEN seç.
 
 🧠 NASIL DAVRANMALISIN:
 
 ✅ **YAP:**
-- Kullanıcının dilini kullan (teknik/günlük ne söylüyorsa)
-- İlk mesajdan maksimum çıkarım yap
-- Eksik bilgiler için NET ve KISA sorular sor (1-2 soru)
-- Belirsizliklerde akıllıca varsayımlar yap
+- 🔥 İLK MESAJDAN MAKSİMUM ÇIKARIM YAP! 
+- Günlük dil kullan, teknik terimlerden kaçın
 - Tüm bilgiler toplandığında "[REÇETE HAZIR]" yaz
 
 ❌ **YAPMA:**
-- Gereksiz teknik jargon kullanma (kullanıcı teknik değilse)
-- Zaten söylenen şeyleri tekrar sorma
-- Çok fazla soru sorma (kullanıcıyı yorma)
-- Kesin bilmediğin şeylerde katı kurallar uygulama
+- ❌ Teknik terimler kullanma (FPS, çözünürlük, latency, anomaly detection gibi)
+- ❌ Kullanıcının zaten promptunda bahsettiği şeyleri sorma
 
-💡 **AKILLI ÇIKARIMLAR:**
-- "hatalı ürün bulmak" → anomaly_detection muhtemelen
-- "araba saymak" → object_detection kesin
-- "plaka okumak" → ocr kesin
-- "fabrika içi" → büyük ihtimalle indoor_controlled
-- "hızlı" → muhtemelen 30fps civarı
-- "Raspberry Pi" → kesinlikle edge_device, küçük model gerek
 
 🎨 SEN KARAR VER:
-Kullanıcı her detayı vermeyebilir. Mantıklı olanı SEN seç:
-- Proje adını SEN oluştur (task_amac_v1 formatında)
-- FPS ve latency değerlerini SEN belirle
-- En uygun modeli SEN seç
-- Eğer cihaz belirtmediyse, deployment tipini kullanım senaryosuna göre SEN öner
+✅ Kullanıcının anlattığı projeden mantıklı çıkarımlar yap.
+✅ Eksik teknik detayları makul değerlerle SEN doldur
+✅ Varsayımlarını kullanıcıya günlük dille özet olarak göster.
 
 JSON ŞEMASI:
 {json.dumps(schema_json, indent=2)}
@@ -290,9 +319,24 @@ if __name__ == "__main__":
                     print(f"🚀 Platform: {recipe.deployment.name}")
                     print(f"⚡ FPS Hedefi: {recipe.performance.min_fps}")
                     print(f"⏱️  Max Gecikme: {recipe.performance.max_latency_ms}ms")
+                    print(f"\n📷 KAMERA ÖZELLİKLERİ:")
+                    print(f"   Çözünürlük: {recipe.camera.resolution_width}x{recipe.camera.resolution_height}")
+                    print(f"   Max FPS: {recipe.camera.max_camera_fps}")
+                    if recipe.camera.lens_type:
+                        print(f"   Lens: {recipe.camera.lens_type}")
+                    print(f"   Tip: {'Renkli' if recipe.camera.is_color else 'Monokrom'}")
+                    if recipe.camera.connection_type:
+                        print(f"   Bağlantı: {recipe.camera.connection_type}")
+                    print(f"\n💻 DONANIM:")
                     if recipe.hardware.device_name:
-                        print(f"💻 Cihaz: {recipe.hardware.device_name}")
-                    print(f"🧠 Önerilen Model: {recipe.suggested_model}")
+                        print(f"   Cihaz: {recipe.hardware.device_name}")
+                    if recipe.hardware.ram_gb:
+                        print(f"   RAM: {recipe.hardware.ram_gb} GB")
+                    if recipe.hardware.storage_gb:
+                        print(f"   Depolama: {recipe.hardware.storage_gb} GB")
+                    if recipe.hardware.has_gpu is not None:
+                        print(f"   GPU: {'Var' if recipe.hardware.has_gpu else 'Yok'}")
+                    print(f"\n🧠 Önerilen Model: {recipe.suggested_model}")
                     print("="*60)
                     
                     # JSON'u kaydet
