@@ -1,11 +1,23 @@
 import os
 import json
 import re
+import logging
 from enum import Enum
 from typing import List, Optional
 from pydantic import BaseModel, Field, ValidationError
 from openai import OpenAI
 from dotenv import load_dotenv
+
+# Logging yapılandırması
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('requirement_analyzer.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # ==========================================
 # BÖLÜM 1: VERİ MODELLERİ
@@ -96,24 +108,34 @@ class VisionProjectRecipe(BaseModel):
         description="Donanım kısıtlamaları ve tercihler."
     )
     suggested_model: Optional[str] = Field(
-        None, description="LLM tarafından önerilen model. Örn: 'YOLOv8-Nano'"
+        None, description="LLM tarafından önerilen model."
     )
 
 # ==========================================
-# BÖLÜM 2: OPENAI AJAN MANTIĞI (DÜZELTME)
+# BÖLÜM 2: OPENAI AJAN MANTIĞI (DÜZELTME) 
 # ==========================================
 
 class RecipeAgent:
-    def __init__(self, api_key):
+    MAX_HISTORY_LENGTH = 20  # Maksimum konuşma geçmişi sayısı (system prompt hariç)
+    
+    def __init__(self):
+        # API key'i environment'tan güvenli şekilde oku
+        load_dotenv()
+        api_key = os.getenv("OPENAI_API_KEY")
+        
+        if not api_key or api_key == "sk-your-api-key-here":
+            logger.error("Geçerli bir OPENAI_API_KEY bulunamadı!")
+            raise ValueError("Geçerli bir OPENAI_API_KEY environment variable'ı gerekli.")
+        
         self.client = OpenAI(api_key=api_key)
         self.history = []
-        self.collected_info = {}  # Toplanan bilgileri saklayalım
+        logger.info("RecipeAgent başarıyla başlatıldı.")
         
         # Pydantic şemasını LLM'in anlayacağı JSON formatına çeviriyoruz
         schema_json = VisionProjectRecipe.model_json_schema()
         
         self.system_prompt = f"""
-Sen bir Görüntü İşleme Proje Danışmanısın. ⚠️ ÖNEMLİ: Kullanıcı görüntü işleme konusunda TEKNİK BİLGİYE SAHİP DEĞİL!
+Sen bir Senior Computer Vision Engineer'sın. ⚠️ ÖNEMLİ: Kullanıcı görüntü işleme konusunda TEKNİK BİLGİYE SAHİP DEĞİL!
 
 🎯 GÖREV:
 Kullanıcının GÜNLÜK DİLLE anlattığı projeden maksimum bilgiyi ÇIKARSANABİLDİĞİNCE ÇOK ÇIKARIM YAP, mümkün olduğunca AZ SORU SOR.
@@ -151,13 +173,15 @@ Kullanıcının GÜNLÜK DİLLE anlattığı projeden maksimum bilgiyi ÇIKARSAN
 
 6. **Model Önerisi**
    - Yukarıdaki bilgilere göre en uygun Computer Vision modelini SEN seç.
+   Model önerirken sadece bilinen, yaygın ve 'Deployment Type' ile uyumlu modelleri  öner.
+
 
 🧠 NASIL DAVRANMALISIN:
 
 ✅ **YAP:**
 - 🔥 İLK MESAJDAN MAKSİMUM ÇIKARIM YAP! 
 - Günlük dil kullan, teknik terimlerden kaçın
-- Tüm bilgiler toplandığında "[REÇETE HAZIR]" yaz
+- Tüm bilgiler toplandığında "[REÇETE HAZIR]" yaz.
 
 ❌ **YAPMA:**
 - ❌ Teknik terimler kullanma (FPS, çözünürlük, latency, anomaly detection gibi)
@@ -168,6 +192,12 @@ Kullanıcının GÜNLÜK DİLLE anlattığı projeden maksimum bilgiyi ÇIKARSAN
 ✅ Kullanıcının anlattığı projeden mantıklı çıkarımlar yap.
 ✅ Eksik teknik detayları makul değerlerle SEN doldur
 ✅ Varsayımlarını kullanıcıya günlük dille özet olarak göster.
+✅ DONANIM ve MODEL seçiminde NET ve SPESIFIK ol - belirsiz ifadeler kullanma!
+
+📌 REÇETE HAZIR OLMADAN ÖNCE KONTROL ET:
+- ✓ Donanım seçimi spesifik mi? 
+- ✓ Model seçimi net mi? 
+
 
 JSON ŞEMASI:
 {json.dumps(schema_json, indent=2)}
@@ -179,6 +209,14 @@ JSON ŞEMASI:
 """
         
         self.history.append({"role": "system", "content": self.system_prompt})
+
+    def _truncate_history(self):
+        """Konuşma geçmişini belirli bir uzunlukta tutar (system prompt korunur)."""
+        if len(self.history) > self.MAX_HISTORY_LENGTH + 1:  # +1 for system prompt
+            # System prompt'u koru, eski mesajları sil
+            system_prompt = self.history[0]
+            self.history = [system_prompt] + self.history[-(self.MAX_HISTORY_LENGTH):]
+            logger.info(f"Konuşma geçmişi kırpıldı. Mevcut uzunluk: {len(self.history)}")
 
     def _clean_json_string(self, json_string):
         """LLM bazen ```json ... ``` şeklinde markdown ekler, bunu temizler."""
@@ -193,10 +231,14 @@ JSON ŞEMASI:
         return json_string.strip()
 
     def chat(self, user_input: str):
+        logger.info(f"Kullanıcı girişi alındı: {user_input[:50]}..." if len(user_input) > 50 else f"Kullanıcı girişi alındı: {user_input}")
+        
         self.history.append({"role": "user", "content": user_input})
+        self._truncate_history()  # Geçmişi kontrol et ve gerekirse kırp
 
         try:
             # ✅ response_format KULLANMIYORUZ - LLM'in doğal sohbet etmesine izin veriyoruz
+            logger.debug(f"OpenAI API'ye istek gönderiliyor. History uzunluğu: {len(self.history)}")
             response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=self.history,
@@ -205,9 +247,11 @@ JSON ŞEMASI:
             
             ai_response = response.choices[0].message.content
             self.history.append({"role": "assistant", "content": ai_response})
+            logger.info("OpenAI API yanıtı başarıyla alındı.")
             
             # "[REÇETE HAZIR]" kontrolü
             if "[REÇETE HAZIR]" in ai_response or "[RECETE HAZIR]" in ai_response:
+                logger.info("Reçete hazır sinyali alındı.")
                 # Kullanıcıya bildir ve JSON iste
                 return {
                     "status": "ready_for_json",
@@ -223,10 +267,12 @@ JSON ŞEMASI:
             }
 
         except Exception as e:
+            logger.error(f"API Hatası: {str(e)}", exc_info=True)
             return {"status": "error", "message": f"API Hatası: {str(e)}"}
 
     def generate_recipe(self):
         """Reçete hazır olduğunda bu fonksiyonu çağır, JSON oluştur"""
+        logger.info("JSON reçetesi oluşturma işlemi başlatıldı.")
         try:
             # JSON üretimi için özel istek
             json_request = {
@@ -237,6 +283,7 @@ JSON ŞEMASI:
             self.history.append(json_request)
             
             # ✅ Şimdi response_format kullanabiliriz çünkü sadece JSON istiyoruz
+            logger.debug("JSON formatında yanıt isteniyor...")
             response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=self.history,
@@ -246,11 +293,13 @@ JSON ŞEMASI:
             
             json_response = response.choices[0].message.content
             cleaned_json = self._clean_json_string(json_response)
+            logger.debug(f"Temizlenmiş JSON alındı: {cleaned_json[:100]}...")
             
             # JSON'u parse et ve validate et
             data = json.loads(cleaned_json)
             recipe = VisionProjectRecipe(**data)
             
+            logger.info(f"Reçete başarıyla oluşturuldu: {recipe.project_name}")
             return {
                 "status": "completed",
                 "message": "✅ Reçete başarıyla oluşturuldu ve doğrulandı!",
@@ -258,12 +307,14 @@ JSON ŞEMASI:
             }
             
         except (json.JSONDecodeError, ValidationError) as e:
+            logger.error(f"JSON oluşturma/doğrulama hatası: {str(e)}", exc_info=True)
             return {
                 "status": "error",
                 "message": f"❌ JSON oluşturma hatası: {str(e)}\nLütfen daha fazla detay verin.",
                 "recipe": None
             }
         except Exception as e:
+            logger.error(f"Beklenmeyen hata: {str(e)}", exc_info=True)
             return {"status": "error", "message": f"API Hatası: {str(e)}"}
 
 # ==========================================
@@ -271,13 +322,9 @@ JSON ŞEMASI:
 # ==========================================
 
 if __name__ == "__main__":
-    load_dotenv()
-    API_KEY = os.getenv("OPENAI_API_KEY")
-
-    if not API_KEY or API_KEY == "sk-your-api-key-here":
-        print("❌ Lütfen .env dosyasındaki OPENAI_API_KEY değişkenine geçerli bir OpenAI anahtarı girin.")
-    else:
-        agent = RecipeAgent(API_KEY)
+    try:
+        agent = RecipeAgent()  # API key artık constructor içinde yönetiliyor
+        logger.info("Uygulama başlatıldı.")
         
         print("\n🤖 GÖRÜNTÜ İŞLEME MİMARI: Merhaba! Projenizden bahsedin, teknik detayları belirleyelim.\n")
         print("Çıkmak için 'q' tuşuna basabilirsiniz.\n")
@@ -286,10 +333,12 @@ if __name__ == "__main__":
             try:
                 user_in = input("Siz: ")
             except (KeyboardInterrupt, EOFError):
+                logger.info("Kullanıcı uygulamadan çıktı (Ctrl+C).")
                 print("\nGörüşürüz!")
                 break
 
             if user_in.lower() in ["q", "exit", "çık"]:
+                logger.info("Kullanıcı uygulamadan çıktı.")
                 print("Görüşürüz!")
                 break
             
@@ -344,6 +393,7 @@ if __name__ == "__main__":
                     with open(output_file, "w", encoding="utf-8") as f:
                         json.dump(recipe.model_dump(), f, indent=2, ensure_ascii=False)
                     print(f"\n💾 Reçete kaydedildi: {output_file}")
+                    logger.info(f"Reçete dosyaya kaydedildi: {output_file}")
                     
                     break
                 else:
@@ -352,3 +402,8 @@ if __name__ == "__main__":
             elif result["status"] == "error":
                 print(f"❌ Hata: {result['message']}")
                 break
+                
+    except ValueError as e:
+        print(f"❌ {str(e)}")
+        print("Lütfen .env dosyasındaki OPENAI_API_KEY değişkenine geçerli bir OpenAI anahtarı girin.")
+        exit(1)
