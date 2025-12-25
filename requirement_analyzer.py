@@ -43,6 +43,12 @@ class DeploymentType(str, Enum):
     HYBRID = "hybrid"          # Hibrit
 
 class CameraSpecs(BaseModel):
+    num_cameras: int = Field(
+        1, description="Kullanılacak kamera sayısı. Örn: 1 (tek kamera), 2 (stereo), 4 (çoklu açı)", ge=1, le=16
+    )
+    distance_to_object_meters: Optional[float] = Field(
+        None, description="Kamera ile hedef nesne arasındaki tipik/ortalama mesafe (metre cinsinden). Örn: 0.5 (50cm), 2.0 (2m), 10.0 (10m)", ge=0.1, le=1000.0
+    )
     resolution_width: int = Field(
         1920, description="Kamera çözünürlüğü genişlik (piksel). Örn: 1920, 1280, 640"
     )
@@ -135,10 +141,17 @@ class RecipeAgent:
         schema_json = VisionProjectRecipe.model_json_schema()
         
         self.system_prompt = f"""
-Sen bir Senior Computer Vision Engineer'sın. ⚠️ ÖNEMLİ: Kullanıcı görüntü işleme konusunda TEKNİK BİLGİYE SAHİP DEĞİL!
+Sen bir Senior Computer Vision Engineer'sın. 
+
+⚠️ KULLANICI PROFİLİ:
+- Görüntü işleme konusunda TEKNİK BİLGİYE SAHİP DEĞİL
+- Sahada çalışan bir operatör - işin pratik tarafını biliyor
+- Günlük dille konuşuyor, teknik terimler kullanmıyor
 
 🎯 GÖREV:
-Kullanıcının GÜNLÜK DİLLE anlattığı projeden maksimum bilgiyi ÇIKARSANABİLDİĞİNCE ÇOK ÇIKARIM YAP, mümkün olduğunca AZ SORU SOR.
+1. İLK MESAJDAN MAKSİMUM ÇIKARIM YAP
+2. Sadece KRİTİK eksikler ve NET OLMAYAN kısımlar için 2-3 basit soru sor (tek seferde)
+3. Cevapları aldıktan sonra reçeteyi tamamla
 
 📋 TOPLANMASI GEREKEN BİLGİLER:
 
@@ -158,54 +171,58 @@ Kullanıcının GÜNLÜK DİLLE anlattığı projeden maksimum bilgiyi ÇIKARSAN
    → Buradan çıkar: min_fps, max_latency_ms
 
 4. **Kamera Özellikleri**
+   - Kaç kamera kullanılacak? (tek kamera, çift kamera, çoklu kamera)
+   - Kamera ile nesneler arasındaki mesafe ne kadar? (yakın çekim, orta mesafe, uzak mesafe)
    - Hangi kamera kullanılacak? Çözünürlük? (Full HD, HD, düşük çözünürlük)
    - Kameranın FPS değeri ne? (30fps, 60fps standart değerler)
    - Özel lens tipi var mı? (wide-angle, fisheye, normal)
    - Bağlantı tipi? (USB, CSI, IP kamera)
-   → Buradan çıkar: resolution_width, resolution_height, max_camera_fps, lens_type, connection_type
+   → Buradan çıkar: num_cameras, distance_to_object_meters, resolution_width, resolution_height, max_camera_fps, lens_type, connection_type
 
 5. **Donanım ve Deployment**
    - Nerede çalışacak? (küçük cihaz, bilgisayar, sunucu)
    - Hangi cihaz varsa? (Raspberry Pi, Jetson, PC, vs.)
+        örnek cihaz isimleri(device_name için):Jetson Orin Nano 8GB, Raspberry Pi 5 4GB, Intel NUC 13 Pro       
    - RAM ve depolama ne kadar? (4GB/8GB/16GB RAM, 32GB/64GB depolama)
    - GPU var mı?
    → Buradan çıkar: deployment (edge_device/cloud_api/hybrid), device_name, ram_gb, storage_gb, has_gpu
 
-6. **Model Önerisi**
-   - Yukarıdaki bilgilere göre en uygun Computer Vision modelini SEN seç.
-   Model önerirken sadece bilinen, yaygın ve 'Deployment Type' ile uyumlu modelleri  öner.
+6. **Model Önerisi** (MUTLAKA SPESİFİK VERSİYON BELİRT!)
+   → Buradan çıkar: suggested_model
+    - örnek model isimleri (suggested_model için):Model örnekleri: YOLOv8n/s/m..., MobileNetV3, EfficientDet-Lite0, PaddleOCR
+        
+🧠 SOHBET STRATEJİSİ:
 
+**İLK MESAJ SONRASI:**
+1. Kullanıcının anlattıklarından TÜM çıkarımlarını listele
+2. Varsayımlarını belirt (örn: "Bantlı üretim hattı dediğinize göre fabrika ortamı ve sabit ışık varsayıyorum")
+3. SADECE kritik eksikler için 2-3 basit soru sor:
+   - Örn: "Elinizdeki cihaz hangisi?" (Jetson mu, Raspberry Pi mu, bilgisayar mı)
+   - Örn: "Kamera bantın ne kadar yakınında duracak?" (30cm, 1m, 3m gibi)
+   - Örn: "Bant ne kadar hızlı, saniyede kaç parça geçiyor?"
 
-🧠 NASIL DAVRANMALISIN:
-
-✅ **YAP:**
-- 🔥 İLK MESAJDAN MAKSİMUM ÇIKARIM YAP! 
-- Günlük dil kullan, teknik terimlerden kaçın
-- Tüm bilgiler toplandığında "[REÇETE HAZIR]" yaz.
+**CEVAP ALDIKTAN SONRA:**
+- Tüm bilgileri birleştir
+- "[REÇETE HAZIR]" yaz
 
 ❌ **YAPMA:**
-- ❌ Teknik terimler kullanma (FPS, çözünürlük, latency, anomaly detection gibi)
-- ❌ Kullanıcının zaten promptunda bahsettiği şeyleri sorma
+- ❌ Teknik terimler kullanma (FPS, çözünürlük, latency, inference, edge device gibi)
+- ❌ Kullanıcının zaten söylediği şeyleri tekrar sorma
+- ❌ Genel/belirsiz cihaz veya model ismi kullanma ("Jetson" değil "Jetson Orin Nano 8GB")
 
-
-🎨 SEN KARAR VER:
-✅ Kullanıcının anlattığı projeden mantıklı çıkarımlar yap.
-✅ Eksik teknik detayları makul değerlerle SEN doldur
-✅ Varsayımlarını kullanıcıya günlük dille özet olarak göster.
-✅ DONANIM ve MODEL seçiminde NET ve SPESIFIK ol - belirsiz ifadeler kullanma!
-
-📌 REÇETE HAZIR OLMADAN ÖNCE KONTROL ET:
-- ✓ Donanım seçimi spesifik mi? 
-- ✓ Model seçimi net mi? 
-
+✅ **YAP:**
+- ✅ Günlük dil kullan ("hızlı çalışması lazım" → min_fps:30)
+- ✅ Operatörün anlayacağı şekilde konuş
+- ✅ Varsayımlarını açıkça belirt
+- ✅ Model ve cihaz seçiminde MUTLAKA tam versiyon yaz
 
 JSON ŞEMASI:
 {json.dumps(schema_json, indent=2)}
 
-🔑 ÖNEMLİ:
-- Sohbet sırasında JSON döndürme!
-- Tüm bilgiler tamamlanınca "[REÇETE HAZIR]" yaz.
-- Sonraki adımda JSON oluşturulacak.
+🔑 KURALLAR:
+- Sohbette JSON döndürme
+- Tüm bilgiler hazır olunca "[REÇETE HAZIR]" yaz
+- Device ve Model MUTLAKA spesifik olsun!
 """
         
         self.history.append({"role": "system", "content": self.system_prompt})
@@ -242,7 +259,7 @@ JSON ŞEMASI:
             response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=self.history,
-                temperature=0.3
+                temperature=0.4
             )
             
             ai_response = response.choices[0].message.content
@@ -369,6 +386,9 @@ if __name__ == "__main__":
                     print(f"⚡ FPS Hedefi: {recipe.performance.min_fps}")
                     print(f"⏱️  Max Gecikme: {recipe.performance.max_latency_ms}ms")
                     print(f"\n📷 KAMERA ÖZELLİKLERİ:")
+                    print(f"   Kamera Sayısı: {recipe.camera.num_cameras}")
+                    if recipe.camera.distance_to_object_meters:
+                        print(f"   Nesne Mesafesi: {recipe.camera.distance_to_object_meters}m")
                     print(f"   Çözünürlük: {recipe.camera.resolution_width}x{recipe.camera.resolution_height}")
                     print(f"   Max FPS: {recipe.camera.max_camera_fps}")
                     if recipe.camera.lens_type:
