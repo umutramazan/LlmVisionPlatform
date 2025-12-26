@@ -1,7 +1,6 @@
 """
 Recipe Check Module
 -------------------
-LLM + heuristics ile reçete inceleme ve düzeltme modülü.
 
 Çıktılar:
 - *_corrected_recipe.json  (VisionProjectRecipe şemasına uygun düzeltilmiş reçete)
@@ -23,6 +22,7 @@ from requirement_analyzer import VisionProjectRecipe
 # Logging yapılandırması (modül seviyesinde)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+logger.propagate = False  # Root logger'a iletmeyi engelle (çift logu önlemek için)
 
 # Mevcut handler yoksa ekle
 if not logger.handlers:
@@ -72,7 +72,7 @@ class CheckOutput(BaseModel):
 
 class RecipeChecker:
     """
-    LLM + basit kurallar ile reçete inceleme ve düzeltme.
+    LLM ile reçete inceleme ve düzeltme.
     
     Kullanım:
         checker = RecipeChecker()
@@ -88,7 +88,7 @@ class RecipeChecker:
             raise ValueError("Geçerli bir OPENAI_API_KEY environment variable'ı gerekli.")
 
         self.client = OpenAI(api_key=api_key)
-        self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
+        self.model = model or os.getenv("OPENAI_MODEL", "gpt-5.2")
         logger.info(f"RecipeChecker başlatıldı. Model: {self.model}")
 
         # Şemaları JSON formatına çevir
@@ -105,7 +105,6 @@ Kullanıcının VisionProjectRecipe reçetesini mantık süzgecinden geçir, hat
 
 1. **Performans Tutarlılığı**
    - min_fps ve max_latency_ms uyumlu mu?
-   - Formül: max_latency_ms ≈ 1000 / min_fps (örn: 30 FPS → 33ms)
    - Kameranın max_camera_fps değeri, hedef min_fps'i karşılıyor mu?
 
 2. **Donanım Uyumluluğu**
@@ -148,96 +147,6 @@ CheckReport JSON şeması:
 {json.dumps(report_schema, ensure_ascii=False, indent=2)}
 """
 
-    @staticmethod
-    def _recommended_latency_ms(min_fps: int) -> int:
-        """FPS değerine göre önerilen gecikme süresini hesapla."""
-        if min_fps <= 0:
-            return 1000
-        return max(1, int(round(1000.0 / float(min_fps))))
-
-    def _heuristic_checks(self, recipe: VisionProjectRecipe) -> List[CheckIssue]:
-        """Basit kurallarla ön kontrol yap."""
-        issues: List[CheckIssue] = []
-
-        # 1. FPS / Latency tutarlılığı
-        recommended = self._recommended_latency_ms(recipe.performance.min_fps)
-        if recipe.performance.max_latency_ms > recommended * 1.5:  # %50 tolerans
-            issues.append(
-                CheckIssue(
-                    field="performance.max_latency_ms",
-                    severity="critical",
-                    current_value=recipe.performance.max_latency_ms,
-                    suggested_value=recommended,
-                    reason=f"{recipe.performance.min_fps} FPS hedefi için gecikme çok yüksek. Önerilen: ~{recommended}ms"
-                )
-            )
-
-        # 2. Kamera FPS kontrolü
-        if recipe.camera.max_camera_fps < recipe.performance.min_fps:
-            issues.append(
-                CheckIssue(
-                    field="camera.max_camera_fps",
-                    severity="critical",
-                    current_value=recipe.camera.max_camera_fps,
-                    suggested_value=recipe.performance.min_fps,
-                    reason="Kameranın desteklediği FPS, hedef FPS'ten düşük!"
-                )
-            )
-
-        # 3. Edge deployment için device_name kontrolü
-        if recipe.deployment.value == "edge_device" and not recipe.hardware.device_name:
-            issues.append(
-                CheckIssue(
-                    field="hardware.device_name",
-                    severity="warning",
-                    current_value=None,
-                    suggested_value="Jetson Orin Nano 8GB / Raspberry Pi 5 4GB",
-                    reason="Edge cihazı belirlenmemiş; model seçimi etkilenebilir."
-                )
-            )
-
-        # 4. GPU gerektiren model için GPU kontrolü
-        gpu_models = ["yolo", "efficientdet", "resnet", "mobilenet"]
-        if recipe.suggested_model:
-            model_lower = recipe.suggested_model.lower()
-            needs_gpu = any(m in model_lower for m in gpu_models)
-            if needs_gpu and recipe.hardware.has_gpu is False:
-                issues.append(
-                    CheckIssue(
-                        field="hardware.has_gpu",
-                        severity="warning",
-                        current_value=False,
-                        suggested_value=True,
-                        reason=f"{recipe.suggested_model} GPU ile daha iyi performans verir."
-                    )
-                )
-
-        # 5. Hedef nesne kontrolü
-        if not recipe.target_objects:
-            issues.append(
-                CheckIssue(
-                    field="target_objects",
-                    severity="critical",
-                    current_value=[],
-                    suggested_value=["hedef_nesne"],
-                    reason="Hedef nesne listesi boş olamaz!"
-                )
-            )
-
-        # 6. Bağlantı tipi eksikliği
-        if not recipe.camera.connection_type:
-            issues.append(
-                CheckIssue(
-                    field="camera.connection_type",
-                    severity="info",
-                    current_value=None,
-                    suggested_value="USB",
-                    reason="Kamera bağlantı tipi belirtilmemiş."
-                )
-            )
-
-        return issues
-
     def check_and_correct(
         self,
         recipe_input: Union[VisionProjectRecipe, Dict[str, Any], str],
@@ -264,14 +173,9 @@ CheckReport JSON şeması:
             original_dict = recipe_input
             recipe = VisionProjectRecipe(**original_dict)
 
-        # Heuristic kontroller
-        heuristic_issues = self._heuristic_checks(recipe)
-        logger.info(f"Heuristic kontrol tamamlandı. {len(heuristic_issues)} sorun bulundu.")
-
         # LLM'e gönderilecek prompt
         user_prompt = {
             "recipe": original_dict,
-            "heuristic_findings": [i.model_dump() for i in heuristic_issues],
             "instructions": {
                 "task": "Reçeteyi incele, hataları düzelt, rapor oluştur",
                 "output_format": {
@@ -279,7 +183,6 @@ CheckReport JSON şeması:
                     "check_report": "CheckReport şemasına uygun JSON"
                 },
                 "rules": [
-                    "Heuristic bulgularını değerlendir ve mantıklıysa uygula",
                     "Performans parametrelerini tutarlı hale getir",
                     "suggested_model mutlaka spesifik versiyon olsun",
                     "Gereksiz değişiklik yapma",
@@ -330,31 +233,15 @@ CheckReport JSON şeması:
         except (json.JSONDecodeError, ValidationError) as e:
             logger.error(f"Parse/validate hatası: {str(e)}", exc_info=True)
 
-            # Fallback: Heuristics ile minimal düzeltme
-            corrected = recipe.model_dump()
-            changes: List[str] = []
-
-            # Latency düzelt
-            recommended = self._recommended_latency_ms(recipe.performance.min_fps)
-            if corrected["performance"]["max_latency_ms"] > recommended * 1.5:
-                corrected["performance"]["max_latency_ms"] = recommended
-                changes.append(f"performance.max_latency_ms değeri {recommended} olarak düzeltildi.")
-
-            # Bağlantı tipi ekle
-            if not corrected["camera"]["connection_type"]:
-                corrected["camera"]["connection_type"] = "USB"
-                changes.append("camera.connection_type varsayılan olarak 'USB' atandı.")
-
             report = CheckReport(
                 is_valid=False,
-                confidence_score=60.0,
-                summary="LLM çıktısı doğrulanamadı; temel kurallarla minimal düzeltme yapıldı.",
-                issues=heuristic_issues,
-                changes_made=changes
+                confidence_score=0.0,
+                summary="LLM çıktısı doğrulanamadı.",
+                issues=[],
+                changes_made=[]
             )
 
-            corrected_model = VisionProjectRecipe(**corrected)
-            return corrected_model, report
+            return recipe, report
 
         except Exception as e:
             logger.error(f"Beklenmeyen hata: {str(e)}", exc_info=True)

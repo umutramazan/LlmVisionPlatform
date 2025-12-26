@@ -20,6 +20,7 @@ from recipe_check import RecipeChecker, CheckReport, save_json
 # Logging yapılandırması (modül seviyesinde)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+logger.propagate = False  # Root logger'a iletmeyi engelle (çift logu önlemek için)
 
 # Mevcut handler yoksa ekle
 if not logger.handlers:

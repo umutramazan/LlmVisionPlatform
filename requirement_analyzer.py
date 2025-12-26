@@ -257,7 +257,7 @@ JSON ŞEMASI:
             # ✅ response_format KULLANMIYORUZ - LLM'in doğal sohbet etmesine izin veriyoruz
             logger.debug(f"OpenAI API'ye istek gönderiliyor. History uzunluğu: {len(self.history)}")
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.2",
                 messages=self.history,
                 temperature=0.4
             )
@@ -302,7 +302,7 @@ JSON ŞEMASI:
             # ✅ Şimdi response_format kullanabiliriz çünkü sadece JSON istiyoruz
             logger.debug("JSON formatında yanıt isteniyor...")
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.2",
                 messages=self.history,
                 temperature=0.2,
                 response_format={"type": "json_object"}
